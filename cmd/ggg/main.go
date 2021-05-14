@@ -2,17 +2,22 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"strconv"
+	"strings"
 	"time"
-
-	"github.com/PuerkitoBio/goquery"
 
 	"golang.org/x/oauth2"
 
+	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/PuerkitoBio/goquery"
 	"github.com/google/go-github/v35/github"
 )
 
@@ -24,6 +29,7 @@ func main() {
 }
 
 func run() error {
+	// prelude
 	ctx := context.Background()
 
 	oauthClient := oauth2.NewClient(ctx, oauth2.StaticTokenSource(
@@ -35,15 +41,38 @@ func run() error {
 	fromPage, _ := strconv.Atoi(os.Getenv("FROM_PAGE"))
 	fromIndex, _ := strconv.Atoi(os.Getenv("FROM_INDEX"))
 
+	// database
+	//fp, err := os.Create("./data/gophers.sqlite3")
+	//if err != nil {
+	//	return fmt.Errorf("error creating db, %w", err)
+	//}
+	//fp.Close()
+
+	db, err := sql.Open("sqlite3", "./data/gophers.sqlite3")
+	if err != nil {
+		return fmt.Errorf("error opening db, %w", err)
+	}
+	defer db.Close()
+
+	// logic
 	for page := fromPage; page < 1000; page++ {
+		fmt.Print("+")
+
 		repos, err := getGoReposURLs(client, page)
 		if err != nil {
 			return fmt.Errorf("failed get repos, %w", err)
 		}
 
 		for idx, repo := range repos {
+			fmt.Print("-")
+
 			if idx < fromIndex {
 				continue
+			}
+			if err = dbInsertRepo(db, repo, page, idx); err != nil {
+				if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					return fmt.Errorf("insert repo error, %w", err)
+				}
 			}
 
 			sources, err := scrapeRepoReadmeImageSources(*repo.HTMLURL)
@@ -52,11 +81,17 @@ func run() error {
 			}
 
 			for _, source := range sources {
-				fmt.Println(source)
+				if err = dbInsertSource(db, repo.GetFullName(), source); err != nil {
+					if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+						return fmt.Errorf("insert image error, %w", err)
+					}
+				}
 			}
 
-			time.Sleep(time.Second / 4)
+			time.Sleep(time.Second / 20)
 		}
+
+		fmt.Println()
 	}
 
 	return nil
@@ -77,6 +112,35 @@ func getGoReposURLs(client *github.Client, page int) ([]*github.Repository, erro
 	}
 
 	return result.Repositories, nil
+}
+
+func dbInsertRepo(db *sql.DB, repo *github.Repository, page, pageIndex int) error {
+	stmt, err := db.Prepare("INSERT INTO repos(repo_name, repo_url, page, page_index) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	if _, err = stmt.Exec(repo.GetFullName(), repo.GetHTMLURL(), page, pageIndex); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func dbInsertSource(db *sql.DB, repoName, sourceURL string) error {
+	stmt, err := db.Prepare("INSERT INTO sources(repo_name, url, domain, ext) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	u, _ := url.Parse(sourceURL)
+	if _, err = stmt.Exec(repoName, sourceURL, u.Host, path.Ext(sourceURL)); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func scrapeRepoReadmeImageSources(repoURL string) ([]string, error) {

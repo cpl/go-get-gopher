@@ -1,3 +1,4 @@
 deployment/.netrc
 **/.env.*
 out/
+*.sqlite3
