@@ -2,3 +2,4 @@ deployment/.netrc
 **/.env.*
 out/
 *.sqlite3
+data/
