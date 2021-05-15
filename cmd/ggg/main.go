@@ -28,6 +28,12 @@ func main() {
 	}
 }
 
+type imageInfo struct {
+	sourceURL string
+	canonURL  string
+	alt       string
+}
+
 func run() error {
 	// prelude
 	ctx := context.Background()
@@ -81,7 +87,7 @@ func run() error {
 			}
 
 			for _, source := range sources {
-				if err = dbInsertSource(db, repo.GetFullName(), source); err != nil {
+				if err = dbInsertSource(db, repo.GetFullName(), source.sourceURL, source.canonURL, source.alt); err != nil {
 					if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
 						return fmt.Errorf("insert image error, %w", err)
 					}
@@ -128,22 +134,30 @@ func dbInsertRepo(db *sql.DB, repo *github.Repository, page, pageIndex int) erro
 	return nil
 }
 
-func dbInsertSource(db *sql.DB, repoName, sourceURL string) error {
-	stmt, err := db.Prepare("INSERT INTO sources(repo_name, url, domain, ext) VALUES (?, ?, ?, ?)")
+func dbInsertSource(db *sql.DB, repoName, sourceURL, canonURL, alt string) error {
+	stmt, err := db.Prepare("INSERT INTO sources(repo_name, url, domain, ext, alt, canon_url, canon_domain, canon_ext) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
-	u, _ := url.Parse(sourceURL)
-	if _, err = stmt.Exec(repoName, sourceURL, u.Host, path.Ext(sourceURL)); err != nil {
+	uS, _ := url.Parse(sourceURL)
+	if uS == nil {
+		uS = new(url.URL)
+	}
+	uC, _ := url.Parse(canonURL)
+	if uC == nil {
+		uC = new(url.URL)
+	}
+
+	if _, err = stmt.Exec(repoName, sourceURL, uS.Host, path.Ext(sourceURL), alt, canonURL, uC.Host, path.Ext(canonURL)); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func scrapeRepoReadmeImageSources(repoURL string) ([]string, error) {
+func scrapeRepoReadmeImageSources(repoURL string) ([]imageInfo, error) {
 	res, err := http.Get(repoURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed making repo page request, %w", err)
@@ -154,7 +168,7 @@ func scrapeRepoReadmeImageSources(repoURL string) ([]string, error) {
 		return nil, fmt.Errorf("unexpected status code %d", res.StatusCode)
 	}
 
-	images := make([]string, 0)
+	images := make([]imageInfo, 0, 1)
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
@@ -166,7 +180,14 @@ func scrapeRepoReadmeImageSources(repoURL string) ([]string, error) {
 		if source[0] == '/' {
 			source = "https://github.com" + source
 		}
-		images = append(images, source)
+		alt, _ := s.Attr("alt")
+		canon, _ := s.Attr("data-canonical-src")
+
+		images = append(images, imageInfo{
+			sourceURL: source,
+			canonURL:  canon,
+			alt:       alt,
+		})
 	})
 
 	return images, nil

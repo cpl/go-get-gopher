@@ -13,4 +13,3 @@ create index repos_page_index
 
 create unique index repos_repo_name_uindex
     on repos (repo_name);
-
